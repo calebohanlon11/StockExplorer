@@ -1,32 +1,65 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, ScrollView, Pressable, TextInput, Modal, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, ScrollView, Pressable, TextInput, Modal, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Card from '../components/Card';
 import StatRow from '../components/StatRow';
 import MetricTooltip from '../components/MetricTooltip';
 import LoadingIndicator from '../components/LoadingIndicator';
+import SkeletonLoader from '../components/SkeletonLoader';
 import { getQuote, getCompanyProfile, getStockMetrics, Quote, CompanyProfile, StockMetrics } from '../services/finnhub';
+import {
+  runSetupAnalysis, SetupAnalysis, SetupLabel, ConfidenceLevel,
+} from '../services/analysis';
 import { useWatchlist } from '../context/WatchlistContext';
 import { usePortfolio } from '../context/PortfolioContext';
 import { useAlerts } from '../context/AlertsContext';
+import { useSubscription } from '../context/SubscriptionContext';
+import LockedGate from '../components/LockedGate';
 import { lightTap, successTap } from '../utils/haptics';
 import Colors from '../constants/colors';
 
 interface StockDetailScreenProps {
   ticker: string;
   onBack: () => void;
-  onViewExplanation: () => void;
+  onViewAnalysis: () => void;
   onCompare?: () => void;
 }
 
-export default function StockDetailScreen({ ticker, onBack, onViewExplanation, onCompare }: StockDetailScreenProps) {
+const SETUP_COLOR: Record<SetupLabel, string> = {
+  'Favorable Setup': Colors.gain,
+  'Cautiously Positive': '#4ADE80',
+  'Mixed Setup': '#FBBF24',
+  'Cautiously Negative': '#F97316',
+  'Weak Setup': Colors.loss,
+};
+
+const SETUP_ICON: Record<SetupLabel, keyof typeof Ionicons.glyphMap> = {
+  'Favorable Setup': 'checkmark-circle',
+  'Cautiously Positive': 'arrow-up-circle',
+  'Mixed Setup': 'swap-horizontal-outline',
+  'Cautiously Negative': 'arrow-down-circle',
+  'Weak Setup': 'alert-circle',
+};
+
+const CONF_COLOR: Record<ConfidenceLevel, string> = {
+  'Moderate-high': Colors.gain,
+  'Moderate': '#FBBF24',
+  'Low-moderate': '#F97316',
+  'Low — elevated uncertainty': Colors.loss,
+};
+
+export default function StockDetailScreen({ ticker, onBack, onViewAnalysis, onCompare }: StockDetailScreenProps) {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [profile, setProfile] = useState<CompanyProfile | null>(null);
   const [metrics, setMetrics] = useState<StockMetrics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [setupData, setSetupData] = useState<SetupAnalysis | null>(null);
+  const [setupLoading, setSetupLoading] = useState(true);
+  const [showMarketData, setShowMarketData] = useState(false);
   const { isWatched, toggle } = useWatchlist();
-  const { addHolding, hasHolding } = usePortfolio();
+  const { addHolding, hasHolding, getHolding } = usePortfolio();
   const { addAlert, getAlertsForTicker, removeAlert } = useAlerts();
+  const { isFullAccess } = useSubscription();
   const watched = isWatched(ticker);
   const inPortfolio = hasHolding(ticker);
 
@@ -41,7 +74,7 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickerAlerts = getAlertsForTicker(ticker);
 
-  const loadData = async (silent = false) => {
+  const loadData = async () => {
     try {
       const [q, p, m] = await Promise.all([
         getQuote(ticker),
@@ -52,7 +85,7 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
       if (p) setProfile(p);
       if (m) setMetrics(m);
     } catch (err) {
-      if (!silent) console.warn('StockDetail load error:', err);
+      console.warn('StockDetail load error:', err);
     } finally {
       setLoading(false);
     }
@@ -67,6 +100,27 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
       if (refreshTimer.current) clearInterval(refreshTimer.current);
     };
   }, [ticker]);
+
+  useEffect(() => {
+    if (!quote || quote.c === 0) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const ownsStock = hasHolding(ticker);
+        const holding = getHolding(ticker);
+        let holdingInfo: { ownsStock: boolean; gainPct: number | null } | undefined;
+        if (ownsStock && holding) {
+          holdingInfo = { ownsStock: true, gainPct: ((quote.c - holding.avgCost) / holding.avgCost) * 100 };
+        }
+        const result = await runSetupAnalysis(ticker, quote, holdingInfo);
+        if (!cancelled && result) setSetupData(result);
+      } catch {}
+      if (!cancelled) setSetupLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [quote?.c, ticker]);
 
   const handleAdd = () => {
     const shares = parseFloat(sharesInput);
@@ -116,7 +170,9 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
   const exchange = profile?.exchange || '';
 
   const marketCap = profile?.marketCapitalization
-    ? `$${(profile.marketCapitalization / 1000).toFixed(1)}B`
+    ? (profile.marketCapitalization >= 1000
+      ? `$${(profile.marketCapitalization / 1000).toFixed(1)}B`
+      : `$${profile.marketCapitalization.toFixed(0)}M`)
     : '—';
 
   const dayRange = quote.h - quote.l;
@@ -127,9 +183,18 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
   const range52 = (high52 && low52) ? high52 - low52 : 0;
   const pos52 = range52 > 0 ? ((quote.c - low52!) / range52) * 100 : null;
 
+  const topPositive = setupData?.factors.filter(f => f.score > 0.2).sort((a, b) => b.score - a.score)[0] ?? null;
+  const topRisk = setupData?.factors.filter(f => f.score < -0.2).sort((a, b) => a.score - b.score)[0] ?? null;
+  const analog = setupData?.historical?.analog ?? null;
+
+  const setupSummaryFirstSentence = setupData?.setupSummary?.split('. ')[0]
+    ? setupData.setupSummary.split('. ')[0] + '.'
+    : null;
+
   return (
     <>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        {/* ── Top Bar ─────────────────────────────── */}
         <View style={styles.topBar}>
           <Pressable style={styles.backButton} onPress={onBack}>
             <Ionicons name="arrow-back" size={20} color={Colors.mutedForeground} />
@@ -146,6 +211,7 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
           </View>
         </View>
 
+        {/* ── Header ──────────────────────────────── */}
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.ticker}>{ticker}</Text>
@@ -160,8 +226,8 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
           </View>
           <View style={styles.priceContainer}>
             <Text style={styles.price}>${quote.c.toFixed(2)}</Text>
-            <View style={styles.changeRow}>
-              <Ionicons name={positive ? 'trending-up' : 'trending-down'} size={16} color={positive ? Colors.gain : Colors.loss} />
+            <View style={[styles.changePill, { backgroundColor: positive ? Colors.gainBg : Colors.lossBg }]}>
+              <Ionicons name={positive ? 'trending-up' : 'trending-down'} size={13} color={positive ? Colors.gain : Colors.loss} />
               <Text style={[styles.changeText, { color: positive ? Colors.gain : Colors.loss }]}>
                 {change >= 0 ? '+' : ''}{change.toFixed(2)}%
               </Text>
@@ -169,7 +235,7 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
           </View>
         </View>
 
-        {/* Active alerts for this stock */}
+        {/* ── Active alerts ───────────────────────── */}
         {tickerAlerts.length > 0 && (
           <View style={styles.alertsRow}>
             {tickerAlerts.map((a) => (
@@ -184,109 +250,225 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
           </View>
         )}
 
-        <Card glow={positive ? 'green' : 'none'} style={styles.chartCard}>
-          <Text style={styles.chartLabel}>Today's Range</Text>
-          <View style={styles.rangeLabels}>
-            <Text style={styles.rangeValue}>${quote.l.toFixed(2)}</Text>
-            <Text style={[styles.rangeCurrent, { color: positive ? Colors.gain : Colors.loss }]}>${quote.c.toFixed(2)}</Text>
-            <Text style={styles.rangeValue}>${quote.h.toFixed(2)}</Text>
-          </View>
-          <View style={styles.rangeBarTrack}>
-            <View style={[styles.rangeBarFill, { width: `${Math.min(Math.max(dayPosition, 2), 98)}%` }]} />
-            <View style={[styles.rangeBarDot, { left: `${Math.min(Math.max(dayPosition, 2), 98)}%` }]} />
-          </View>
-          <View style={styles.rangeLabelRow}>
-            <Text style={styles.rangeHint}>Low</Text>
-            <Text style={styles.rangeHint}>High</Text>
-          </View>
-
-          {pos52 !== null && high52 && low52 && (
-            <>
-              <Text style={[styles.chartLabel, { marginTop: 16 }]}>52-Week Range</Text>
-              <View style={styles.rangeLabels}>
-                <Text style={styles.rangeValue}>${low52.toFixed(2)}</Text>
-                <Text style={styles.rangeCurrent}>{pos52.toFixed(0)}%</Text>
-                <Text style={styles.rangeValue}>${high52.toFixed(2)}</Text>
-              </View>
-              <View style={styles.rangeBarTrack}>
-                <View style={[styles.rangeBarFill52, { width: `${Math.min(Math.max(pos52, 2), 98)}%` }]} />
-                <View style={[styles.rangeBarDot52, { left: `${Math.min(Math.max(pos52, 2), 98)}%` }]} />
-              </View>
-              <View style={styles.rangeLabelRow}>
-                <Text style={styles.rangeHint}>52W Low</Text>
-                <Text style={styles.rangeHint}>52W High</Text>
-              </View>
-            </>
-          )}
-        </Card>
-
-        <Card style={styles.statsCard}>
-          <View style={styles.statsTitleRow}>
-            <Text style={styles.cardTitle}>Key Statistics</Text>
-            <MetricTooltip metricKey="marketCap" />
-          </View>
-          <StatRow label="Market Cap" value={marketCap} />
-          <StatRow label="Open" value={`$${quote.o.toFixed(2)}`} />
-          <StatRow label="Prev Close" value={`$${quote.pc.toFixed(2)}`} />
-          {metrics?.peTTM != null && (
-            <View style={styles.metricRow}>
-              <View style={styles.metricLabelRow}>
-                <Text style={styles.metricLabel}>P/E Ratio</Text>
-                <MetricTooltip metricKey="pe" />
-              </View>
-              <Text style={styles.metricVal}>{metrics.peTTM.toFixed(1)}</Text>
+        {/* ── Insight Blocks (gated for preview users) ── */}
+        {!isFullAccess ? (
+          <LockedGate onUpgrade={onViewAnalysis} />
+        ) : (
+        <>
+        {/* ── 1. Setup Preview (hero insight block) ── */}
+        {setupLoading ? (
+          <Card style={styles.setupPreviewCard}>
+            <SkeletonLoader width="35%" height={10} />
+            <SkeletonLoader width="55%" height={22} style={{ marginTop: 8 }} />
+            <SkeletonLoader width="90%" height={13} style={{ marginTop: 8 }} />
+            <View style={{ flexDirection: 'row', gap: 12, marginTop: 12 }}>
+              <SkeletonLoader width="45%" height={36} borderRadius={10} />
+              <SkeletonLoader width="45%" height={36} borderRadius={10} />
             </View>
-          )}
-          {metrics?.beta != null && (
-            <View style={styles.metricRow}>
-              <View style={styles.metricLabelRow}>
-                <Text style={styles.metricLabel}>Beta</Text>
-                <MetricTooltip metricKey="beta" />
+          </Card>
+        ) : setupData ? (
+          <Pressable onPress={onViewAnalysis}>
+            <Card style={{ ...styles.setupPreviewCard, borderLeftWidth: 3, borderLeftColor: SETUP_COLOR[setupData.setupLabel] }}>
+              <View style={styles.setupPreviewHeader}>
+                <View style={styles.setupPreviewTitleRow}>
+                  <Ionicons name={SETUP_ICON[setupData.setupLabel]} size={18} color={SETUP_COLOR[setupData.setupLabel]} />
+                  <Text style={styles.setupPreviewLabel}>SETUP ASSESSMENT</Text>
+                </View>
+                <View style={[styles.confPill, { borderColor: CONF_COLOR[setupData.confidence] + '40' }]}>
+                  <View style={[styles.confDot, { backgroundColor: CONF_COLOR[setupData.confidence] }]} />
+                  <Text style={[styles.confText, { color: CONF_COLOR[setupData.confidence] }]}>{setupData.confidence}</Text>
+                </View>
               </View>
-              <Text style={styles.metricVal}>{metrics.beta.toFixed(2)}</Text>
-            </View>
-          )}
-          {metrics?.dividendYieldIndicatedAnnual != null && metrics.dividendYieldIndicatedAnnual > 0 && (
-            <View style={styles.metricRow}>
-              <View style={styles.metricLabelRow}>
-                <Text style={styles.metricLabel}>Dividend Yield</Text>
-                <MetricTooltip metricKey="dividend" />
+
+              <Text style={[styles.setupLabelText, { color: SETUP_COLOR[setupData.setupLabel] }]}>
+                {setupData.setupLabel}
+              </Text>
+
+              {setupSummaryFirstSentence && (
+                <Text style={styles.setupSummaryText} numberOfLines={2}>{setupSummaryFirstSentence}</Text>
+              )}
+
+              <View style={styles.factorPreviewRow}>
+                {topPositive ? (
+                  <View style={styles.factorPreviewItem}>
+                    <View style={[styles.factorPreviewDot, { backgroundColor: Colors.gain }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.factorPreviewName, { color: Colors.gain }]}>{topPositive.name}</Text>
+                      <Text style={styles.factorPreviewSummary} numberOfLines={1}>{topPositive.summary}</Text>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.factorPreviewItem}>
+                    <View style={[styles.factorPreviewDot, { backgroundColor: Colors.mutedForeground }]} />
+                    <Text style={styles.factorPreviewEmpty}>No strong positives detected</Text>
+                  </View>
+                )}
+                {topRisk ? (
+                  <View style={styles.factorPreviewItem}>
+                    <View style={[styles.factorPreviewDot, { backgroundColor: Colors.loss }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.factorPreviewName, { color: Colors.loss }]}>{topRisk.name}</Text>
+                      <Text style={styles.factorPreviewSummary} numberOfLines={1}>{topRisk.summary}</Text>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.factorPreviewItem}>
+                    <View style={[styles.factorPreviewDot, { backgroundColor: Colors.mutedForeground }]} />
+                    <Text style={styles.factorPreviewEmpty}>No major risks detected</Text>
+                  </View>
+                )}
               </View>
-              <Text style={styles.metricVal}>{metrics.dividendYieldIndicatedAnnual.toFixed(2)}%</Text>
+
+              <View style={styles.tapHintRow}>
+                <Text style={styles.tapHint}>Tap for full analysis</Text>
+                <Ionicons name="chevron-forward" size={12} color={Colors.accent} />
+              </View>
+            </Card>
+          </Pressable>
+        ) : null}
+
+        {/* ── 2. Historical Similar Setups Preview ── */}
+        {setupLoading ? (
+          <Card style={styles.analogPreviewCard}>
+            <SkeletonLoader width="50%" height={10} />
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+              <SkeletonLoader width="30%" height={48} borderRadius={10} />
+              <SkeletonLoader width="30%" height={48} borderRadius={10} />
+              <SkeletonLoader width="30%" height={48} borderRadius={10} />
             </View>
-          )}
-        </Card>
+          </Card>
+        ) : analog ? (
+          <Pressable onPress={onViewAnalysis}>
+            <Card style={{ ...styles.analogPreviewCard, borderLeftWidth: 3, borderLeftColor: '#A78BFA' }}>
+              <View style={styles.analogPreviewHeader}>
+                <View style={styles.analogPreviewTitleRow}>
+                  <Ionicons name="time-outline" size={14} color="#A78BFA" />
+                  <Text style={styles.analogPreviewLabel}>WHEN THIS HAPPENED BEFORE</Text>
+                </View>
+                <Text style={styles.analogCaseCount}>{analog.matchCount} similar days</Text>
+              </View>
 
-        <View style={styles.actions}>
-          <Pressable style={styles.primaryButton} onPress={onViewExplanation}>
-            <Ionicons name="flash" size={16} color={Colors.primaryForeground} />
-            <Text style={styles.primaryButtonText}>AI Analysis</Text>
-          </Pressable>
-          <Pressable style={styles.watchlistButton} onPress={() => { toggle(ticker); lightTap(); }}>
-            <Ionicons name={watched ? 'star' : 'star-outline'} size={16} color={watched ? '#FBBF24' : Colors.secondaryForeground} />
-            <Text style={styles.watchlistButtonText}>{watched ? 'Watching' : 'Watch'}</Text>
-          </Pressable>
-        </View>
+              <View style={styles.analogStatsRow}>
+                <AnalogStatCell label="Avg 5-Day" value={analog.forwardReturns.avg5d} />
+                <View style={styles.analogStatDivider} />
+                <WinRateCell winRate={analog.forwardReturns.winRate5d} />
+                <View style={styles.analogStatDivider} />
+                <AnalogStatCell label="Avg 3-Day" value={analog.forwardReturns.avg3d} />
+              </View>
 
-        {onCompare && (
-          <Pressable style={styles.compareButton} onPress={onCompare}>
-            <Ionicons name="git-compare-outline" size={16} color={Colors.accent} />
-            <Text style={[styles.portfolioButtonText, { color: Colors.accent }]}>Compare with Another Stock</Text>
+              <Text style={styles.analogDispersion} numberOfLines={1}>
+                {analog.dispersionNote.charAt(0).toUpperCase() + analog.dispersionNote.slice(1)}
+              </Text>
+
+              <View style={styles.tapHintRow}>
+                <Text style={styles.tapHint}>See full historical analysis</Text>
+                <Ionicons name="chevron-forward" size={12} color={Colors.accent} />
+              </View>
+            </Card>
           </Pressable>
+        ) : !setupLoading && !analog ? (
+          <Card style={{ ...styles.analogPreviewCard, borderLeftWidth: 3, borderLeftColor: '#A78BFA30' }}>
+            <View style={styles.analogPreviewTitleRow}>
+              <Ionicons name="hourglass-outline" size={14} color={Colors.mutedForeground} />
+              <Text style={[styles.analogPreviewLabel, { color: Colors.mutedForeground }]}>HISTORICAL PATTERNS</Text>
+            </View>
+            <Text style={styles.analogUnavailableText}>
+              Not enough history available for this stock to identify patterns yet.
+            </Text>
+          </Card>
+        ) : null}
+
+        {/* ── 3. Full Analysis CTA ────────────────── */}
+        <Pressable style={styles.fullAnalysisCta} onPress={onViewAnalysis}>
+          <View style={styles.ctaLeft}>
+            <Ionicons name="analytics" size={20} color={Colors.primaryForeground} />
+            <View>
+              <Text style={styles.ctaTitle}>View Full Analysis</Text>
+              <Text style={styles.ctaSub}>8 factors · historical patterns · risks</Text>
+            </View>
+          </View>
+          <Ionicons name="arrow-forward" size={18} color={Colors.primaryForeground} />
+        </Pressable>
+        </>
         )}
 
-        <Pressable
-          style={[styles.portfolioButton, inPortfolio && styles.portfolioButtonOwned]}
-          onPress={() => { setShowAddModal(true); lightTap(); }}
-        >
-          <Ionicons name={inPortfolio ? 'add-circle' : 'pie-chart-outline'} size={16} color={inPortfolio ? Colors.accent : Colors.secondaryForeground} />
-          <Text style={[styles.portfolioButtonText, inPortfolio && { color: Colors.accent }]}>
-            {inPortfolio ? 'Add More Shares' : 'Add to Portfolio'}
-          </Text>
+        {/* ── 4. Market Data (compact, collapsible) ── */}
+        <Pressable style={styles.marketDataToggle} onPress={() => setShowMarketData(!showMarketData)}>
+          <View style={styles.marketDataToggleInner}>
+            <Ionicons name="bar-chart-outline" size={14} color={Colors.mutedForeground} />
+            <Text style={styles.marketDataToggleText}>Market Data & Fundamentals</Text>
+          </View>
+          <View style={styles.marketDataRight}>
+            <Text style={styles.marketDataPreview}>{marketCap}</Text>
+            <Ionicons name={showMarketData ? 'chevron-up' : 'chevron-down'} size={16} color={Colors.mutedForeground} />
+          </View>
         </Pressable>
+
+        {showMarketData && (
+          <Card style={styles.marketDataCard}>
+            {/* Price range bars */}
+            <Text style={styles.rangeLabel}>TODAY'S RANGE</Text>
+            <View style={styles.rangeLabels}>
+              <Text style={styles.rangeValue}>${quote.l.toFixed(2)}</Text>
+              <Text style={[styles.rangeCurrent, { color: positive ? Colors.gain : Colors.loss }]}>${quote.c.toFixed(2)}</Text>
+              <Text style={styles.rangeValue}>${quote.h.toFixed(2)}</Text>
+            </View>
+            <View style={styles.rangeBarTrack}>
+              <View style={[styles.rangeBarFill, { width: `${Math.min(Math.max(dayPosition, 2), 98)}%` }]} />
+              <View style={[styles.rangeBarDot, { left: `${Math.min(Math.max(dayPosition, 2), 98)}%` }]} />
+            </View>
+
+            {pos52 !== null && high52 && low52 && (
+              <>
+                <Text style={[styles.rangeLabel, { marginTop: 16 }]}>52-WEEK RANGE</Text>
+                <View style={styles.rangeLabels}>
+                  <Text style={styles.rangeValue}>${low52.toFixed(2)}</Text>
+                  <Text style={styles.rangeCurrent}>{pos52.toFixed(0)}%</Text>
+                  <Text style={styles.rangeValue}>${high52.toFixed(2)}</Text>
+                </View>
+                <View style={styles.rangeBarTrack}>
+                  <View style={[styles.rangeBarFill52, { width: `${Math.min(Math.max(pos52, 2), 98)}%` }]} />
+                  <View style={[styles.rangeBarDot52, { left: `${Math.min(Math.max(pos52, 2), 98)}%` }]} />
+                </View>
+              </>
+            )}
+
+            <View style={styles.statsDivider} />
+
+            <View style={styles.statsGrid}>
+              <FundamentalCell label="Market Cap" value={marketCap} />
+              <FundamentalCell label="Open" value={`$${quote.o.toFixed(2)}`} />
+              <FundamentalCell label="Prev Close" value={`$${quote.pc.toFixed(2)}`} />
+              {metrics?.peTTM != null && <FundamentalCell label="P/E" value={metrics.peTTM.toFixed(1)} tooltip="pe" />}
+              {metrics?.beta != null && <FundamentalCell label="Beta" value={metrics.beta.toFixed(2)} tooltip="beta" />}
+              {metrics?.dividendYieldIndicatedAnnual != null && metrics.dividendYieldIndicatedAnnual > 0 && (
+                <FundamentalCell label="Div Yield" value={`${metrics.dividendYieldIndicatedAnnual.toFixed(2)}%`} tooltip="dividend" />
+              )}
+            </View>
+          </Card>
+        )}
+
+        {/* ── 5. Action Buttons ───────────────────── */}
+        <View style={styles.actionsRow}>
+          {onCompare && (
+            <Pressable style={styles.actionBtn} onPress={onCompare}>
+              <Ionicons name="git-compare-outline" size={16} color={Colors.accent} />
+              <Text style={[styles.actionBtnText, { color: Colors.accent }]}>Compare</Text>
+            </Pressable>
+          )}
+          <Pressable
+            style={[styles.actionBtn, inPortfolio && styles.actionBtnActive]}
+            onPress={() => { setShowAddModal(true); lightTap(); }}
+          >
+            <Ionicons name={inPortfolio ? 'add-circle' : 'pie-chart-outline'} size={16} color={inPortfolio ? Colors.accent : Colors.secondaryForeground} />
+            <Text style={[styles.actionBtnText, inPortfolio && { color: Colors.accent }]}>
+              {inPortfolio ? 'Add Shares' : 'Portfolio'}
+            </Text>
+          </Pressable>
+        </View>
       </ScrollView>
 
-      {/* Add to Portfolio Modal */}
+      {/* ── Add to Portfolio Modal ────────────────── */}
       <Modal visible={showAddModal} transparent animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={styles.modalCard}>
@@ -307,7 +489,7 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Price Alert Modal */}
+      {/* ── Price Alert Modal ────────────────────── */}
       <Modal visible={showAlertModal} transparent animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={styles.modalCard}>
@@ -346,9 +528,49 @@ export default function StockDetailScreen({ ticker, onBack, onViewExplanation, o
   );
 }
 
+// ── Subcomponents ────────────────────────────────────
+
+function AnalogStatCell({ label, value }: { label: string; value: number }) {
+  const color = value >= 0 ? Colors.gain : Colors.loss;
+  return (
+    <View style={styles.analogStatCell}>
+      <Text style={styles.analogStatLabel}>{label}</Text>
+      <Text style={[styles.analogStatValue, { color }]}>
+        {value >= 0 ? '+' : ''}{value.toFixed(2)}%
+      </Text>
+    </View>
+  );
+}
+
+function WinRateCell({ winRate }: { winRate: number }) {
+  const pct = winRate * 100;
+  const color = pct >= 60 ? Colors.gain : pct >= 45 ? '#FBBF24' : Colors.loss;
+  return (
+    <View style={styles.analogStatCell}>
+      <Text style={styles.analogStatLabel}>Positive 5d</Text>
+      <Text style={[styles.analogStatValue, { color }]}>{pct.toFixed(0)}%</Text>
+    </View>
+  );
+}
+
+function FundamentalCell({ label, value, tooltip }: { label: string; value: string; tooltip?: string }) {
+  return (
+    <View style={styles.fundamentalCell}>
+      <View style={styles.fundamentalLabelRow}>
+        <Text style={styles.fundamentalLabel}>{label}</Text>
+        {tooltip && <MetricTooltip metricKey={tooltip} />}
+      </View>
+      <Text style={styles.fundamentalValue}>{value}</Text>
+    </View>
+  );
+}
+
+// ── Styles ───────────────────────────────────────────
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { paddingBottom: 16, gap: 16 },
+  content: { paddingBottom: 20, gap: 12 },
+
   topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   topActions: { flexDirection: 'row', gap: 8 },
   topIconBtn: { padding: 8, borderRadius: 10, backgroundColor: Colors.secondary, position: 'relative' },
@@ -356,53 +578,93 @@ const styles = StyleSheet.create({
   alertBadgeText: { fontSize: 8, fontWeight: '800', color: '#fff' },
   backButton: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   backText: { fontSize: 14, color: Colors.mutedForeground },
+
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  ticker: { fontSize: 30, fontWeight: '700', color: Colors.foreground },
-  companyName: { fontSize: 14, color: Colors.mutedForeground, marginTop: 2 },
+  ticker: { fontSize: 28, fontWeight: '700', color: Colors.foreground },
+  companyName: { fontSize: 13, color: Colors.mutedForeground, marginTop: 2 },
   industryPill: { backgroundColor: Colors.secondary, alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, marginTop: 6 },
   industryText: { fontSize: 10, color: Colors.mutedForeground, fontWeight: '600' },
-  priceContainer: { alignItems: 'flex-end' },
+  priceContainer: { alignItems: 'flex-end', gap: 4 },
   price: { fontSize: 24, fontWeight: '700', color: Colors.foreground },
-  changeRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
-  changeText: { fontSize: 14, fontWeight: '600' },
+  changePill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 },
+  changeText: { fontSize: 13, fontWeight: '700' },
 
   alertsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   alertChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.secondary, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: Colors.border },
   alertChipText: { fontSize: 11, fontWeight: '600', color: Colors.accent },
 
-  chartCard: { marginBottom: 0, gap: 0 },
-  chartLabel: { fontSize: 12, color: Colors.mutedForeground, marginBottom: 8, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
-  rangeLabels: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  rangeValue: { fontSize: 12, color: Colors.mutedForeground },
-  rangeCurrent: { fontSize: 14, fontWeight: '700', color: Colors.foreground },
-  rangeBarTrack: { height: 6, backgroundColor: Colors.secondary, borderRadius: 3, position: 'relative' },
-  rangeBarFill: { height: 6, backgroundColor: Colors.accent, borderRadius: 3, opacity: 0.4 },
-  rangeBarDot: { position: 'absolute', top: -4, width: 14, height: 14, borderRadius: 7, backgroundColor: Colors.accent, marginLeft: -7 },
-  rangeBarFill52: { height: 6, backgroundColor: Colors.primary, borderRadius: 3, opacity: 0.3 },
-  rangeBarDot52: { position: 'absolute', top: -4, width: 14, height: 14, borderRadius: 7, backgroundColor: Colors.primary, marginLeft: -7 },
-  rangeLabelRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
-  rangeHint: { fontSize: 10, color: Colors.mutedForeground },
+  // Setup Preview
+  setupPreviewCard: { gap: 10, borderWidth: 1, borderColor: Colors.border },
+  setupPreviewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  setupPreviewTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  setupPreviewLabel: { fontSize: 9, color: Colors.mutedForeground, letterSpacing: 1.5, fontWeight: '700' },
+  setupLabelText: { fontSize: 20, fontWeight: '800' },
+  setupSummaryText: { fontSize: 13, color: Colors.foreground, lineHeight: 19 },
+  confPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 12, borderWidth: 1 },
+  confDot: { width: 5, height: 5, borderRadius: 3 },
+  confText: { fontSize: 10, fontWeight: '600' },
+  factorPreviewRow: { gap: 8 },
+  factorPreviewItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  factorPreviewDot: { width: 6, height: 6, borderRadius: 3, marginTop: 5 },
+  factorPreviewName: { fontSize: 12, fontWeight: '700' },
+  factorPreviewSummary: { fontSize: 11, color: Colors.mutedForeground, lineHeight: 15 },
+  factorPreviewEmpty: { fontSize: 11, color: Colors.mutedForeground, fontStyle: 'italic' },
+  tapHintRow: { flexDirection: 'row', alignItems: 'center', gap: 4, justifyContent: 'flex-end' },
+  tapHint: { fontSize: 11, color: Colors.accent, fontWeight: '600' },
 
-  statsCard: { marginBottom: 0 },
-  statsTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  cardTitle: { fontSize: 12, fontWeight: '600', color: Colors.mutedForeground, textTransform: 'uppercase', letterSpacing: 1 },
+  // Historical Analog Preview
+  analogPreviewCard: { gap: 8, borderWidth: 1, borderColor: Colors.border },
+  analogPreviewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  analogPreviewTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  analogPreviewLabel: { fontSize: 9, color: '#A78BFA', letterSpacing: 1.5, fontWeight: '700' },
+  analogCaseCount: { fontSize: 11, color: Colors.mutedForeground, fontWeight: '600' },
+  analogStatsRow: { flexDirection: 'row', backgroundColor: Colors.secondary, borderRadius: 10, padding: 2 },
+  analogStatDivider: { width: 1, backgroundColor: Colors.border, marginVertical: 6 },
+  analogStatCell: { flex: 1, alignItems: 'center', paddingVertical: 8, gap: 2 },
+  analogStatLabel: { fontSize: 9, color: Colors.mutedForeground, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.3 },
+  analogStatValue: { fontSize: 16, fontWeight: '800' },
+  analogDispersion: { fontSize: 11, color: Colors.mutedForeground, lineHeight: 15 },
+  analogUnavailableText: { fontSize: 12, color: Colors.mutedForeground, lineHeight: 17 },
 
-  metricRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  metricLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  metricLabel: { fontSize: 14, color: Colors.secondaryForeground },
-  metricVal: { fontSize: 14, fontWeight: '600', color: Colors.foreground },
+  // Full Analysis CTA
+  fullAnalysisCta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: Colors.primary, paddingVertical: 16, paddingHorizontal: 20, borderRadius: 14 },
+  ctaLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  ctaTitle: { fontSize: 15, fontWeight: '700', color: Colors.primaryForeground },
+  ctaSub: { fontSize: 11, color: Colors.primaryForeground, opacity: 0.7, marginTop: 1 },
 
-  actions: { flexDirection: 'row', gap: 12 },
-  primaryButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.primary, paddingVertical: 14, borderRadius: 12 },
-  primaryButtonText: { fontSize: 15, fontWeight: '600', color: Colors.primaryForeground },
-  watchlistButton: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.secondary, paddingVertical: 14, paddingHorizontal: 20, borderRadius: 12 },
-  watchlistButtonText: { fontSize: 15, fontWeight: '600', color: Colors.secondaryForeground },
+  // Market Data (collapsible)
+  marketDataToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: Colors.secondary, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14 },
+  marketDataToggleInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  marketDataToggleText: { fontSize: 13, color: Colors.mutedForeground, fontWeight: '600' },
+  marketDataRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  marketDataPreview: { fontSize: 12, color: Colors.foreground, fontWeight: '600' },
+  marketDataCard: { gap: 0 },
 
-  compareButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.secondary, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: Colors.accent },
-  portfolioButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.secondary, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: Colors.border },
-  portfolioButtonOwned: { borderColor: Colors.accent, backgroundColor: 'rgba(24,181,240,0.08)' },
-  portfolioButtonText: { fontSize: 15, fontWeight: '600', color: Colors.secondaryForeground },
+  rangeLabel: { fontSize: 10, color: Colors.mutedForeground, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 },
+  rangeLabels: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  rangeValue: { fontSize: 11, color: Colors.mutedForeground },
+  rangeCurrent: { fontSize: 13, fontWeight: '700', color: Colors.foreground },
+  rangeBarTrack: { height: 5, backgroundColor: Colors.secondary, borderRadius: 3, position: 'relative' },
+  rangeBarFill: { height: 5, backgroundColor: Colors.accent, borderRadius: 3, opacity: 0.4 },
+  rangeBarDot: { position: 'absolute', top: -3.5, width: 12, height: 12, borderRadius: 6, backgroundColor: Colors.accent, marginLeft: -6 },
+  rangeBarFill52: { height: 5, backgroundColor: Colors.primary, borderRadius: 3, opacity: 0.3 },
+  rangeBarDot52: { position: 'absolute', top: -3.5, width: 12, height: 12, borderRadius: 6, backgroundColor: Colors.primary, marginLeft: -6 },
 
+  statsDivider: { height: 1, backgroundColor: Colors.border, marginVertical: 14 },
+
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  fundamentalCell: { width: '50%', paddingVertical: 6, paddingRight: 8 },
+  fundamentalLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  fundamentalLabel: { fontSize: 11, color: Colors.mutedForeground },
+  fundamentalValue: { fontSize: 14, fontWeight: '600', color: Colors.foreground, marginTop: 1 },
+
+  // Action buttons
+  actionsRow: { flexDirection: 'row', gap: 8 },
+  actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: Colors.secondary, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: Colors.border },
+  actionBtnActive: { borderColor: Colors.accent, backgroundColor: 'rgba(24,181,240,0.08)' },
+  actionBtnText: { fontSize: 13, fontWeight: '600', color: Colors.secondaryForeground },
+
+  // Modals
   modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
   modalCard: { backgroundColor: Colors.card, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, gap: 12 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },

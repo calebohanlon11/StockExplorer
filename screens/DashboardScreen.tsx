@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, ScrollView, Pressable, StyleSheet, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Card from '../components/Card';
@@ -9,6 +9,7 @@ import { SkeletonCard, SkeletonStockRow } from '../components/SkeletonLoader';
 import { getMultipleQuotes, getCompanyProfile, Quote, CompanyProfile } from '../services/finnhub';
 import { useWatchlist } from '../context/WatchlistContext';
 import { useAlerts, PriceAlert } from '../context/AlertsContext';
+import { useSubscription } from '../context/SubscriptionContext';
 import Colors from '../constants/colors';
 
 const INDEX_SYMBOLS = [
@@ -57,10 +58,13 @@ export default function DashboardScreen({ onSelectStock }: DashboardScreenProps)
 
   const { watchlist } = useWatchlist();
   const { checkAlerts, alerts } = useAlerts();
+  const { hasSeenNudge, dismissNudge } = useSubscription();
   const [triggeredAlerts, setTriggeredAlerts] = useState<PriceAlert[]>([]);
 
   const [sectorMap, setSectorMap] = useState<Record<string, string>>({});
   const [chartModal, setChartModal] = useState<{ symbol: string; label: string; quote: Quote } | null>(null);
+  const sectorMapRef = useRef(sectorMap);
+  sectorMapRef.current = sectorMap;
 
   const fetchData = useCallback(async () => {
     try {
@@ -81,9 +85,10 @@ export default function DashboardScreen({ onSelectStock }: DashboardScreenProps)
       if (triggered.length > 0) setTriggeredAlerts(triggered);
 
       if (watchlist.length > 0) {
-        const missing = watchlist.filter((t) => !sectorMap[t]);
+        const currentMap = sectorMapRef.current;
+        const missing = watchlist.filter((t) => !currentMap[t]);
         if (missing.length > 0) {
-          const newMap = { ...sectorMap };
+          const newMap = { ...currentMap };
           await Promise.all(
             missing.slice(0, 6).map(async (sym) => {
               try {
@@ -99,7 +104,7 @@ export default function DashboardScreen({ onSelectStock }: DashboardScreenProps)
       console.warn('Dashboard load error:', err);
     }
     setLoading(false);
-  }, [watchlist, sectorMap, checkAlerts]);
+  }, [watchlist, checkAlerts]);
 
   useEffect(() => {
     fetchData();
@@ -170,6 +175,28 @@ export default function DashboardScreen({ onSelectStock }: DashboardScreenProps)
         </View>
       </View>
 
+      {/* First-launch nudge */}
+      {!hasSeenNudge && (
+        <Pressable
+          style={styles.nudgeBanner}
+          onPress={() => {
+            dismissNudge();
+            if (TRENDING_TICKERS.length > 0) onSelectStock(TRENDING_TICKERS[0]);
+          }}
+        >
+          <Ionicons name="sparkles" size={16} color={Colors.accent} />
+          <Text style={styles.nudgeText}>Tap any stock to see the full analysis</Text>
+          <Ionicons name="arrow-forward" size={14} color={Colors.accent} />
+          <Pressable
+            onPress={(e) => { e.stopPropagation(); dismissNudge(); }}
+            hitSlop={12}
+            style={styles.nudgeClose}
+          >
+            <Ionicons name="close" size={14} color={Colors.mutedForeground} />
+          </Pressable>
+        </Pressable>
+      )}
+
       {/* Triggered alerts banner */}
       {triggeredAlerts.length > 0 && (
         <Card style={styles.alertBanner}>
@@ -185,6 +212,17 @@ export default function DashboardScreen({ onSelectStock }: DashboardScreenProps)
               <Ionicons name="chevron-forward" size={14} color={Colors.mutedForeground} />
             </Pressable>
           ))}
+        </Card>
+      )}
+
+      {/* No data fallback */}
+      {Object.keys(indexQuotes).length === 0 && Object.keys(trendingQuotes).length === 0 && (
+        <Card style={styles.noDataCard}>
+          <Ionicons name="cloud-offline-outline" size={32} color={Colors.mutedForeground} />
+          <Text style={styles.noDataTitle}>Data temporarily unavailable</Text>
+          <Text style={styles.noDataText}>
+            Could not load market data. This is usually caused by API rate limits — pull down to refresh, or wait a moment and try again.
+          </Text>
         </Card>
       )}
 
@@ -323,6 +361,15 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { paddingBottom: 16, gap: 12 },
 
+  nudgeBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.accent + '12', borderRadius: 12,
+    paddingVertical: 12, paddingHorizontal: 14,
+    borderWidth: 1, borderColor: Colors.accent + '25',
+  },
+  nudgeText: { flex: 1, fontSize: 13, color: Colors.accent, fontWeight: '600' },
+  nudgeClose: { padding: 2 },
+
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 },
   greeting: { fontSize: 14, color: Colors.mutedForeground },
   heading: { fontSize: 24, fontWeight: '700', color: Colors.foreground, marginTop: 2 },
@@ -369,6 +416,10 @@ const styles = StyleSheet.create({
   sectorText: { fontSize: 12, color: Colors.secondaryForeground },
   sectorCount: { backgroundColor: Colors.accent, width: 18, height: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   sectorCountText: { fontSize: 10, fontWeight: '700', color: '#fff' },
+
+  noDataCard: { alignItems: 'center', gap: 10, paddingVertical: 32 },
+  noDataTitle: { fontSize: 16, fontWeight: '700', color: Colors.foreground },
+  noDataText: { fontSize: 13, color: Colors.mutedForeground, textAlign: 'center', lineHeight: 20, paddingHorizontal: 16 },
 
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, marginBottom: 4 },
   sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },

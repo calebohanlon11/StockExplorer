@@ -7,26 +7,58 @@ import { PortfolioProvider } from './context/PortfolioContext';
 import { RecentSearchesProvider } from './context/RecentSearchesContext';
 import { AlertsProvider } from './context/AlertsContext';
 import { PortfolioHistoryProvider } from './context/PortfolioHistoryContext';
+import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext';
 import BottomNav, { Tab } from './components/BottomNav';
 import DashboardScreen from './screens/DashboardScreen';
 import StockSearchScreen from './screens/StockSearchScreen';
 import StockDetailScreen from './screens/StockDetailScreen';
-import MarketExplanationScreen from './screens/MarketExplanationScreen';
-import SimulationResultsScreen from './screens/SimulationResultsScreen';
+import SetupAnalysisScreen from './screens/SetupAnalysisScreen';
 import WatchlistScreen from './screens/WatchlistScreen';
 import PortfolioScreen from './screens/PortfolioScreen';
 import CompareScreen from './screens/CompareScreen';
+import WelcomeScreen from './screens/WelcomeScreen';
+import AuthScreen from './screens/AuthScreen';
+import OnboardingScreen from './screens/OnboardingScreen';
+import PaywallScreen from './screens/PaywallScreen';
 import Colors from './constants/colors';
 
 type Screen =
   | { type: 'tab'; tab: Tab }
   | { type: 'detail'; ticker: string; from?: Tab }
-  | { type: 'explanation'; ticker: string }
-  | { type: 'simulation'; ticker: string }
-  | { type: 'compare-with'; ticker: string };
+  | { type: 'analysis'; ticker: string; from?: Tab }
+  | { type: 'compare-with'; ticker: string }
+  | { type: 'welcome' }
+  | { type: 'auth'; mode: 'signup' | 'signin' }
+  | { type: 'onboarding' }
+  | { type: 'paywall' };
 
-export default function App() {
-  const [screen, setScreen] = useState<Screen>({ type: 'tab', tab: 'dashboard' });
+function AppContent() {
+  const {
+    subState, hasCompletedOnboarding, isFullAccess, loaded,
+    startTrial, enterPreview,
+  } = useSubscription();
+
+  const initialScreen = (): Screen => {
+    if (!loaded) return { type: 'welcome' };
+    if (subState === 'none') return { type: 'welcome' };
+    if (!hasCompletedOnboarding) return { type: 'welcome' };
+    return { type: 'tab', tab: 'dashboard' };
+  };
+
+  const [screen, setScreen] = useState<Screen>(initialScreen);
+
+  // Re-derive once loaded if we started before context was ready
+  React.useEffect(() => {
+    if (!loaded) return;
+    if (subState !== 'none' && hasCompletedOnboarding) {
+      setScreen((prev) => {
+        if (prev.type === 'welcome' || prev.type === 'auth' || prev.type === 'onboarding' || prev.type === 'paywall') {
+          return { type: 'tab', tab: 'dashboard' };
+        }
+        return prev;
+      });
+    }
+  }, [loaded, subState, hasCompletedOnboarding]);
 
   const activeTab = screen.type === 'tab' ? screen.tab : undefined;
 
@@ -34,8 +66,54 @@ export default function App() {
     setScreen({ type: 'detail', ticker, from });
   const goToTab = (tab: Tab) => setScreen({ type: 'tab', tab });
 
+  const showPaywall = () => setScreen({ type: 'paywall' });
+
   const renderScreen = () => {
     switch (screen.type) {
+      case 'welcome':
+        return (
+          <WelcomeScreen
+            onGetStarted={() => setScreen({ type: 'auth', mode: 'signup' })}
+            onSignIn={() => setScreen({ type: 'auth', mode: 'signin' })}
+          />
+        );
+
+      case 'auth':
+        return (
+          <AuthScreen
+            initialMode={screen.mode}
+            onAuthenticated={(isNew) => {
+              if (isNew) {
+                setScreen({ type: 'onboarding' });
+              } else {
+                setScreen({ type: 'tab', tab: 'dashboard' });
+              }
+            }}
+          />
+        );
+
+      case 'onboarding':
+        return (
+          <OnboardingScreen
+            onComplete={() => setScreen({ type: 'paywall' })}
+            onSkip={() => setScreen({ type: 'paywall' })}
+          />
+        );
+
+      case 'paywall':
+        return (
+          <PaywallScreen
+            onStartTrial={(plan) => {
+              startTrial(plan);
+              setScreen({ type: 'tab', tab: 'dashboard' });
+            }}
+            onSkip={() => {
+              enterPreview();
+              setScreen({ type: 'tab', tab: 'dashboard' });
+            }}
+          />
+        );
+
       case 'tab':
         switch (screen.tab) {
           case 'dashboard':
@@ -55,23 +133,21 @@ export default function App() {
           <StockDetailScreen
             ticker={screen.ticker}
             onBack={() => goToTab(screen.from ?? 'dashboard')}
-            onViewExplanation={() => setScreen({ type: 'explanation', ticker: screen.ticker })}
+            onViewAnalysis={() => {
+              if (isFullAccess) {
+                setScreen({ type: 'analysis', ticker: screen.ticker, from: screen.from });
+              } else {
+                showPaywall();
+              }
+            }}
             onCompare={() => setScreen({ type: 'compare-with', ticker: screen.ticker })}
           />
         );
-      case 'explanation':
+      case 'analysis':
         return (
-          <MarketExplanationScreen
+          <SetupAnalysisScreen
             ticker={screen.ticker}
-            onBack={() => setScreen({ type: 'detail', ticker: screen.ticker })}
-            onNext={() => setScreen({ type: 'simulation', ticker: screen.ticker })}
-          />
-        );
-      case 'simulation':
-        return (
-          <SimulationResultsScreen
-            ticker={screen.ticker}
-            onBack={() => setScreen({ type: 'explanation', ticker: screen.ticker })}
+            onBack={() => setScreen({ type: 'detail', ticker: screen.ticker, from: screen.from })}
             onHome={() => goToTab('dashboard')}
           />
         );
@@ -85,25 +161,36 @@ export default function App() {
     }
   };
 
+  const showNav = screen.type === 'tab' || screen.type === 'detail' || screen.type === 'analysis' || screen.type === 'compare-with';
+  const showPadding = screen.type !== 'welcome' && screen.type !== 'auth' && screen.type !== 'onboarding' && screen.type !== 'paywall';
+
+  return (
+    <View style={styles.root}>
+      <StatusBar style="light" />
+      <View style={[styles.content, !showPadding && styles.contentFullScreen]}>
+        {renderScreen()}
+      </View>
+      {showNav && <BottomNav active={activeTab ?? 'dashboard'} onNavigate={goToTab} />}
+    </View>
+  );
+}
+
+export default function App() {
   return (
     <ErrorBoundary>
-      <RecentSearchesProvider>
-        <AlertsProvider>
-          <WatchlistProvider>
-            <PortfolioProvider>
-              <PortfolioHistoryProvider>
-                <View style={styles.root}>
-                  <StatusBar style="light" />
-                  <View style={styles.content}>
-                    {renderScreen()}
-                  </View>
-                  <BottomNav active={activeTab ?? 'dashboard'} onNavigate={goToTab} />
-                </View>
-              </PortfolioHistoryProvider>
-            </PortfolioProvider>
-          </WatchlistProvider>
-        </AlertsProvider>
-      </RecentSearchesProvider>
+      <SubscriptionProvider>
+        <RecentSearchesProvider>
+          <AlertsProvider>
+            <WatchlistProvider>
+              <PortfolioProvider>
+                <PortfolioHistoryProvider>
+                  <AppContent />
+                </PortfolioHistoryProvider>
+              </PortfolioProvider>
+            </WatchlistProvider>
+          </AlertsProvider>
+        </RecentSearchesProvider>
+      </SubscriptionProvider>
     </ErrorBoundary>
   );
 }
@@ -117,5 +204,9 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
     paddingTop: 56,
+  },
+  contentFullScreen: {
+    paddingHorizontal: 0,
+    paddingTop: 0,
   },
 });
