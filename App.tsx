@@ -7,6 +7,7 @@ import { PortfolioProvider } from './context/PortfolioContext';
 import { RecentSearchesProvider } from './context/RecentSearchesContext';
 import { AlertsProvider } from './context/AlertsContext';
 import { PortfolioHistoryProvider } from './context/PortfolioHistoryContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext';
 import BottomNav, { Tab } from './components/BottomNav';
 import DashboardScreen from './screens/DashboardScreen';
@@ -16,10 +17,12 @@ import SetupAnalysisScreen from './screens/SetupAnalysisScreen';
 import WatchlistScreen from './screens/WatchlistScreen';
 import PortfolioScreen from './screens/PortfolioScreen';
 import CompareScreen from './screens/CompareScreen';
+import ProfileScreen from './screens/ProfileScreen';
 import WelcomeScreen from './screens/WelcomeScreen';
 import AuthScreen from './screens/AuthScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
 import PaywallScreen from './screens/PaywallScreen';
+import { isSupabaseConfigured } from './constants/config';
 import Colors from './constants/colors';
 
 type Screen =
@@ -30,16 +33,25 @@ type Screen =
   | { type: 'welcome' }
   | { type: 'auth'; mode: 'signup' | 'signin' }
   | { type: 'onboarding' }
-  | { type: 'paywall' };
+  | { type: 'paywall' }
+  | { type: 'profile' };
 
 function AppContent() {
+  const { user } = useAuth();
   const {
     subState, hasCompletedOnboarding, isFullAccess, loaded,
-    startTrial, enterPreview,
+    startTrial, enterPreview, signOut,
   } = useSubscription();
 
   const initialScreen = (): Screen => {
     if (!loaded) return { type: 'welcome' };
+    if (isSupabaseConfigured()) {
+      if (user) {
+        if (!hasCompletedOnboarding) return { type: 'onboarding' };
+        return { type: 'tab', tab: 'dashboard' };
+      }
+      return { type: 'welcome' };
+    }
     if (subState === 'none') return { type: 'welcome' };
     if (!hasCompletedOnboarding) return { type: 'welcome' };
     return { type: 'tab', tab: 'dashboard' };
@@ -47,18 +59,22 @@ function AppContent() {
 
   const [screen, setScreen] = useState<Screen>(initialScreen);
 
-  // Re-derive once loaded if we started before context was ready
   React.useEffect(() => {
     if (!loaded) return;
-    if (subState !== 'none' && hasCompletedOnboarding) {
-      setScreen((prev) => {
-        if (prev.type === 'welcome' || prev.type === 'auth' || prev.type === 'onboarding' || prev.type === 'paywall') {
-          return { type: 'tab', tab: 'dashboard' };
-        }
-        return prev;
-      });
+    const toDashboard = (t: Screen['type']) =>
+      t === 'welcome' || t === 'auth' || t === 'onboarding' || t === 'paywall';
+    if (isSupabaseConfigured()) {
+      if (user && hasCompletedOnboarding) {
+        setScreen((prev) => (toDashboard(prev.type) ? { type: 'tab', tab: 'dashboard' } : prev));
+      } else if (user && !hasCompletedOnboarding) {
+        setScreen((prev) => (prev.type === 'welcome' || prev.type === 'auth' ? { type: 'onboarding' } : prev));
+      }
+      return;
     }
-  }, [loaded, subState, hasCompletedOnboarding]);
+    if (subState !== 'none' && hasCompletedOnboarding) {
+      setScreen((prev) => (toDashboard(prev.type) ? { type: 'tab', tab: 'dashboard' } : prev));
+    }
+  }, [loaded, user, hasCompletedOnboarding, subState]);
 
   const activeTab = screen.type === 'tab' ? screen.tab : undefined;
 
@@ -103,21 +119,38 @@ function AppContent() {
       case 'paywall':
         return (
           <PaywallScreen
-            onStartTrial={(plan) => {
-              startTrial(plan);
+            onStartTrial={async (plan) => {
+              await startTrial(plan);
               setScreen({ type: 'tab', tab: 'dashboard' });
             }}
-            onSkip={() => {
-              enterPreview();
+            onSkip={async () => {
+              await enterPreview();
               setScreen({ type: 'tab', tab: 'dashboard' });
             }}
+          />
+        );
+
+      case 'profile':
+        return (
+          <ProfileScreen
+            onBack={() => goToTab('dashboard')}
+            onSignOut={async () => {
+              await signOut();
+              setScreen({ type: 'welcome' });
+            }}
+            onUpgrade={() => setScreen({ type: 'paywall' })}
           />
         );
 
       case 'tab':
         switch (screen.tab) {
           case 'dashboard':
-            return <DashboardScreen onSelectStock={(t) => goToStock(t, 'dashboard')} />;
+            return (
+              <DashboardScreen
+                onSelectStock={(t) => goToStock(t, 'dashboard')}
+                onProfile={() => setScreen({ type: 'profile' })}
+              />
+            );
           case 'search':
             return <StockSearchScreen onSearch={(t) => goToStock(t, 'search')} />;
           case 'compare':
@@ -161,7 +194,7 @@ function AppContent() {
     }
   };
 
-  const showNav = screen.type === 'tab' || screen.type === 'detail' || screen.type === 'analysis' || screen.type === 'compare-with';
+  const showNav = screen.type === 'tab' || screen.type === 'detail' || screen.type === 'analysis' || screen.type === 'compare-with' || screen.type === 'profile';
   const showPadding = screen.type !== 'welcome' && screen.type !== 'auth' && screen.type !== 'onboarding' && screen.type !== 'paywall';
 
   return (
@@ -178,19 +211,21 @@ function AppContent() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <SubscriptionProvider>
-        <RecentSearchesProvider>
-          <AlertsProvider>
-            <WatchlistProvider>
-              <PortfolioProvider>
-                <PortfolioHistoryProvider>
-                  <AppContent />
-                </PortfolioHistoryProvider>
-              </PortfolioProvider>
-            </WatchlistProvider>
-          </AlertsProvider>
-        </RecentSearchesProvider>
-      </SubscriptionProvider>
+      <AuthProvider>
+        <SubscriptionProvider>
+          <RecentSearchesProvider>
+            <AlertsProvider>
+              <WatchlistProvider>
+                <PortfolioProvider>
+                  <PortfolioHistoryProvider>
+                    <AppContent />
+                  </PortfolioHistoryProvider>
+                </PortfolioProvider>
+              </WatchlistProvider>
+            </AlertsProvider>
+          </RecentSearchesProvider>
+        </SubscriptionProvider>
+      </AuthProvider>
     </ErrorBoundary>
   );
 }

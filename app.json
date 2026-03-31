@@ -2,6 +2,7 @@
   "expo": {
     "name": "StockExplorer",
     "slug": "StockExplorer",
+    "scheme": "stockexplorer",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,9 +13,13 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.stockexplorer.app",
+      "buildNumber": "1"
     },
     "android": {
+      "package": "com.stockexplorer.app",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -25,6 +30,16 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-web-browser",
+      "expo-font"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "2833c17a-427e-4ece-ac89-a7edccfd96ec"
+      }
+    },
+    "owner": "calebohanlon11"
   }
 }

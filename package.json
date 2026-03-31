@@ -4,21 +4,34 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
+    "start:dev": "expo start --dev-client",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "eas:login": "npx eas-cli@latest login",
+    "eas:init": "npx eas-cli@latest init",
+    "eas:build:dev": "npx eas-cli@latest build --profile development",
+    "eas:build:preview": "npx eas-cli@latest build --profile preview",
+    "eas:build:production": "npx eas-cli@latest build --profile production",
+    "eas:submit": "npx eas-cli@latest submit --profile production"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "expo": "~55.0.8",
+    "@supabase/supabase-js": "^2.100.1",
+    "expo": "~55.0.9",
+    "expo-auth-session": "~55.0.10",
     "expo-constants": "~55.0.9",
+    "expo-dev-client": "~55.0.19",
+    "expo-font": "~55.0.4",
     "expo-haptics": "~55.0.9",
     "expo-status-bar": "~55.0.4",
+    "expo-web-browser": "~55.0.10",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "react-native": "0.83.2",
+    "react-native": "0.83.4",
     "react-native-svg": "15.15.3",
+    "react-native-url-polyfill": "^3.0.0",
     "react-native-web": "^0.21.0"
   },
   "devDependencies": {

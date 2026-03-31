@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import {
+  View, Text, TextInput, Pressable, StyleSheet, KeyboardAvoidingView, Platform,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import type { User } from '@supabase/supabase-js';
+import { useSubscription } from '../context/SubscriptionContext';
+import { useAuth } from '../context/AuthContext';
+import { ADMIN_EMAIL, isSupabaseConfigured } from '../constants/config';
+import { showAppAlert } from '../utils/alert';
 import Colors from '../constants/colors';
 
 interface AuthScreenProps {
@@ -13,25 +20,94 @@ export default function AuthScreen({ initialMode = 'signup', onAuthenticated }: 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const { setAdmin, setUserEmail } = useSubscription();
+  const { signInWithPassword, signUpWithPassword, signInWithOAuth } = useAuth();
+
+  function isRecentlyCreatedAccount(u: User, windowMs = 120_000): boolean {
+    const t = u.created_at ? new Date(u.created_at).getTime() : 0;
+    return t > 0 && Date.now() - t < windowMs;
+  }
+
+  const finishLegacyAuth = (authEmail: string) => {
+    const normalized = authEmail.trim().toLowerCase();
+    if (ADMIN_EMAIL && normalized === ADMIN_EMAIL.toLowerCase()) {
+      setAdmin(normalized);
+      onAuthenticated(false);
+      return;
+    }
+    setUserEmail(normalized);
+    onAuthenticated(mode === 'signup');
+  };
 
   const handleSocialAuth = async (provider: 'apple' | 'google') => {
-    // TODO: integrate with Firebase/Supabase Apple/Google sign-in
-    // For now, simulate success
+    if (!isSupabaseConfigured()) {
+      showAppAlert(
+        'Not available',
+        'Apple and Google sign-in needs Supabase. Use email and password, or add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.',
+      );
+      return;
+    }
+    setFormError(null);
     setLoading(true);
-    setTimeout(() => {
+    try {
+      const { error, user } = await signInWithOAuth(provider);
+      if (!error && !user) return;
+      if (error) {
+        setFormError(error);
+        return;
+      }
+      if (!user) {
+        setFormError('Could not load your profile.');
+        return;
+      }
+      const normalized = user.email?.trim().toLowerCase() ?? '';
+      if (ADMIN_EMAIL && normalized && normalized === ADMIN_EMAIL.toLowerCase()) {
+        setAdmin(normalized);
+        onAuthenticated(false);
+        return;
+      }
+      if (normalized) setUserEmail(normalized);
+      onAuthenticated(isRecentlyCreatedAccount(user));
+    } finally {
       setLoading(false);
-      onAuthenticated(mode === 'signup');
-    }, 600);
+    }
   };
 
   const handleEmailAuth = async () => {
     if (!email.trim() || !password.trim()) return;
-    // TODO: integrate with Firebase/Supabase email auth
+    setFormError(null);
     setLoading(true);
-    setTimeout(() => {
+
+    try {
+      if (isSupabaseConfigured()) {
+        if (mode === 'signup') {
+          const { error, session } = await signUpWithPassword(email.trim(), password);
+          if (error) {
+            setFormError(error);
+            return;
+          }
+          if (!session) {
+            setFormError('Check your email to confirm your account, then sign in.');
+            return;
+          }
+          onAuthenticated(true);
+          return;
+        }
+        const { error } = await signInWithPassword(email.trim(), password);
+        if (error) {
+          setFormError(error);
+          return;
+        }
+        onAuthenticated(false);
+        return;
+      }
+
+      await new Promise((r) => setTimeout(r, 400));
+      finishLegacyAuth(email);
+    } finally {
       setLoading(false);
-      onAuthenticated(mode === 'signup');
-    }, 600);
+    }
   };
 
   const isSignUp = mode === 'signup';
@@ -74,6 +150,14 @@ export default function AuthScreen({ initialMode = 'signup', onAuthenticated }: 
         </View>
 
         <View style={styles.emailSection}>
+          {Platform.OS === 'web' && isSupabaseConfigured() ? (
+            <Text style={styles.webHint}>
+              Web tip: if login fails, try http://127.0.0.1:8081 and pause ad blockers for this site.
+            </Text>
+          ) : null}
+          {formError ? (
+            <Text style={styles.errorText}>{formError}</Text>
+          ) : null}
           <TextInput
             style={styles.input}
             placeholder="Email"
@@ -142,6 +226,8 @@ const styles = StyleSheet.create({
   dividerText: { fontSize: 12, color: Colors.mutedForeground, fontWeight: '600' },
 
   emailSection: { gap: 10 },
+  webHint: { fontSize: 11, color: Colors.mutedForeground, lineHeight: 16 },
+  errorText: { fontSize: 13, color: Colors.loss, lineHeight: 18 },
   input: {
     backgroundColor: Colors.secondary, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14,
     fontSize: 15, color: Colors.foreground, borderWidth: 1, borderColor: Colors.border,

@@ -21,8 +21,7 @@ interface CacheEntry {
 }
 
 function isKeyConfigured(): boolean {
-  const key: string = ALPHA_VANTAGE_API_KEY;
-  return key !== 'YOUR_ALPHA_VANTAGE_KEY_HERE' && key.length > 0;
+  return ALPHA_VANTAGE_API_KEY.length > 0;
 }
 
 async function fetchFromApi(symbol: string): Promise<DailyBar[]> {

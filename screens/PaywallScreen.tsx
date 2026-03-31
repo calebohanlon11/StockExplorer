@@ -4,8 +4,8 @@ import { Ionicons } from '@expo/vector-icons';
 import Colors from '../constants/colors';
 
 interface PaywallScreenProps {
-  onStartTrial: (plan: 'monthly' | 'annual') => void;
-  onSkip: () => void;
+  onStartTrial: (plan: 'monthly' | 'annual') => void | Promise<void>;
+  onSkip: () => void | Promise<void>;
 }
 
 const FEATURES = [
@@ -83,7 +83,7 @@ export default function PaywallScreen({ onStartTrial, onSkip }: PaywallScreenPro
       </View>
 
       {/* CTA */}
-      <Pressable style={styles.ctaButton} onPress={() => onStartTrial(selectedPlan)}>
+      <Pressable style={styles.ctaButton} onPress={() => void onStartTrial(selectedPlan)}>
         <Text style={styles.ctaText}>Start Free Trial</Text>
       </Pressable>
 
@@ -97,7 +97,7 @@ export default function PaywallScreen({ onStartTrial, onSkip }: PaywallScreenPro
           <Text style={styles.bottomLinkText}>Restore purchase</Text>
         </Pressable>
         <Text style={styles.bottomLinkDivider}>·</Text>
-        <Pressable style={styles.bottomLink} onPress={onSkip}>
+        <Pressable style={styles.bottomLink} onPress={() => void onSkip()}>
           <Text style={styles.bottomLinkText}>Maybe later</Text>
         </Pressable>
       </View>

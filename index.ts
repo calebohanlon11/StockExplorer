@@ -1,4 +1,8 @@
+import 'react-native-url-polyfill/auto';
+import * as WebBrowser from 'expo-web-browser';
 import { registerRootComponent } from 'expo';
+
+WebBrowser.maybeCompleteAuthSession();
 
 import App from './App';
 

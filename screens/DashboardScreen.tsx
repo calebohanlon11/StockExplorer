@@ -33,6 +33,7 @@ const STOCK_NAMES: Record<string, string> = {
 
 interface DashboardScreenProps {
   onSelectStock: (ticker: string) => void;
+  onProfile: () => void;
 }
 
 function isMarketOpen(): boolean {
@@ -49,7 +50,7 @@ function formatTime(d: Date): string {
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
-export default function DashboardScreen({ onSelectStock }: DashboardScreenProps) {
+export default function DashboardScreen({ onSelectStock, onProfile }: DashboardScreenProps) {
   const [indexQuotes, setIndexQuotes] = useState<Record<string, Quote>>({});
   const [trendingQuotes, setTrendingQuotes] = useState<Record<string, Quote>>({});
   const [loading, setLoading] = useState(true);
@@ -158,7 +159,7 @@ export default function DashboardScreen({ onSelectStock }: DashboardScreenProps)
       }
     >
       <View style={styles.headerRow}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.greeting}>{greeting}</Text>
           <Text style={styles.heading}>Markets Overview</Text>
         </View>
@@ -173,6 +174,9 @@ export default function DashboardScreen({ onSelectStock }: DashboardScreenProps)
             <Text style={styles.updatedText}>Updated {formatTime(lastUpdated)}</Text>
           )}
         </View>
+        <Pressable style={styles.profileButton} onPress={onProfile}>
+          <Ionicons name="person-circle-outline" size={28} color={Colors.mutedForeground} />
+        </Pressable>
       </View>
 
       {/* First-launch nudge */}
@@ -370,7 +374,8 @@ const styles = StyleSheet.create({
   nudgeText: { flex: 1, fontSize: 13, color: Colors.accent, fontWeight: '600' },
   nudgeClose: { padding: 2 },
 
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4, gap: 8 },
+  profileButton: { padding: 2, marginTop: 2 },
   greeting: { fontSize: 14, color: Colors.mutedForeground },
   heading: { fontSize: 24, fontWeight: '700', color: Colors.foreground, marginTop: 2 },
   statusCol: { alignItems: 'flex-end', gap: 4, marginTop: 4 },

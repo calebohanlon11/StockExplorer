@@ -1,248 +1,163 @@
 # StockExplorer
 
-A cross-platform stock market exploration app built with **Expo** and **React Native**. StockExplorer provides real-time market data, in-depth stock analysis, portfolio tracking, and an educational simulation mode — all powered by the [Finnhub](https://finnhub.io/) API.
+A cross-platform stock market app built with **Expo** and **React Native**. StockExplorer focuses on **decision support**: what moved, possible drivers, and what similar historical setups tended to do next — with cautious, descriptive language (not investment advice).
+
+**Data sources:** [Finnhub](https://finnhub.io/) (quotes, profiles, metrics, news) and [Alpha Vantage](https://www.alphavantage.co/) (historical daily prices for pattern matching, cached to respect free-tier limits).
 
 ---
 
 ## Features
 
+### First launch & account
+- Welcome screen, email/password sign-up and sign-in via **[Supabase Auth](https://supabase.com/docs/guides/auth)** when `EXPO_PUBLIC_SUPABASE_*` is set; optional **Apple / Google** OAuth when redirect URLs are configured in Supabase; otherwise **legacy mock auth** + local-only subscription flags
+- Short onboarding and paywall with **7-day free trial** stored in **Supabase** (`profiles` + RPCs) when Supabase is configured
+- **Profile** — person icon on the home header: account email, subscription status, sign out (clears Supabase session)
+- **Owner admin access** — set `is_admin = true` on your row in `public.profiles` in the Supabase dashboard (server-side). With Supabase enabled, `EXPO_PUBLIC_ADMIN_EMAIL` is **not** used for entitlements (legacy mode only)
+
 ### Dashboard
-- Live market overview showing S&P 500, NASDAQ, and DOW index performance via ETF proxies (SPY, QQQ, DIA)
-- Market status indicator (open/closed) based on Eastern Time
-- Trending stocks section with real-time quotes for major tickers (TSLA, NVDA, AAPL, META, MSFT, GOOG, AMZN, AMD)
-- Inline mini-charts for quick price visualization
-- Pull-to-refresh for up-to-date data
-- Watchlist alerts with triggered notification badges
+- Market overview (indices via SPY, QQQ, DIA), market open/closed, pull-to-refresh
+- Top movers, sector hints, watchlist-driven sections, optional chart modal
+- First-launch nudge to try full analysis on a stock
 
-### Stock Search
-- Real-time symbol search powered by Finnhub's search endpoint
-- Filters results to Common Stock, ADR, and ETP types
-- Prioritizes US-listed stocks over international listings
-- Recent search history persisted locally via AsyncStorage
+### Stock search & detail
+- Debounced search, recent searches, international badges where relevant
+- Quote, profile, metrics, watchlist, portfolio add, alerts, collapsible market data
+- **Insight-first** layout: setup preview and historical “when this happened before” preview (when subscribed / admin)
+- Gated full **Setup Analysis** screen for non-subscribers
 
-### Stock Detail
-- Real-time quote with price, change, and percent change
-- Company profile (name, exchange, industry, market cap)
-- Comprehensive financial metrics including:
-  - Price returns (5-day, 13-week, 26-week, 52-week, MTD, YTD)
-  - 52-week high/low with range position
-  - Valuation ratios (P/E, Forward P/E, P/B, PEG, EV/EBITDA)
-  - Growth metrics (EPS growth YoY, 5Y; Revenue growth YoY, 5Y)
-  - Profitability (ROE, ROI, gross/net/operating margins)
-  - Risk indicators (Beta, Debt/Equity, volatility)
-- Educational metric tooltips explaining what each financial term means
-- Add to watchlist / portfolio with custom shares and cost basis
-- Set price alerts (above/below thresholds)
-- Auto-refresh on a timer for live price updates
+### Setup analysis
+- Multi-factor setup summary, “what happened today,” possible drivers (conservative news matching), historical forward-return stats when data allows, factor breakdown, bull/bear framing, risk notes
 
-### Market Explanation
-- AI-style rules-based analysis engine that evaluates stocks across five dimensions:
-  - **Momentum** — short-term and long-term price trends, S&P 500 relative performance
-  - **Valuation** — P/E, Forward P/E, PEG, EV/EBITDA scoring
-  - **Growth** — EPS and revenue growth (YoY and 5-year)
-  - **Profitability** — ROE, net margin, gross margin evaluation
-  - **Risk** — Beta, debt/equity, volatility assessment
-- Generates a composite signal: Bullish, Cautiously Bullish, Neutral, Cautiously Bearish, or Bearish
-- Produces an action rating: Strong Buy, Buy, Hold, Reduce, or Sell
-- Highlights key bull/bear factors driving the rating
-- Provides a natural-language conclusion and actionable advice
-
-### Simulation Results
-- Shows projected outcomes based on the analysis engine's signal
-- Helps users understand potential scenarios before investing
-
-### Stock Comparison
-- Side-by-side comparison of two stocks
-- Compare key metrics: price, change, P/E, PEG, EPS growth, revenue growth, ROE, margin, beta, and more
-- Visual winner highlighting per metric
-
-### Watchlist
-- Add/remove stocks to a persistent watchlist (AsyncStorage)
-- Quick access to watchlisted stocks with live quotes
-
-### Portfolio
-- Track holdings with shares count and cost basis
-- Calculate unrealized P&L per position and total portfolio value
-- Portfolio history tracking over time
-
-### Price Alerts
-- Set custom price alerts (above/below a target price)
-- Alerts checked on dashboard load with visual notification
+### Watchlist, portfolio, compare, alerts
+- Persistent watchlist and portfolio (AsyncStorage), price alerts, compare two tickers
 
 ---
 
-## Tech Stack
+## Tech stack
 
 | Layer | Technology |
-|---|---|
+|-------|------------|
 | Framework | [Expo](https://expo.dev/) ~55 |
-| UI | [React Native](https://reactnative.dev/) 0.83 + [React](https://react.dev/) 19 |
-| Web Support | [React Native Web](https://necolas.github.io/react-native-web/) |
-| Language | TypeScript 5.9 (strict) |
-| Icons | [@expo/vector-icons](https://docs.expo.dev/guides/icons/) (Ionicons) |
-| Charts | Custom SVG mini-charts via [react-native-svg](https://github.com/software-mansion/react-native-svg) |
-| Storage | [@react-native-async-storage/async-storage](https://react-native-async-storage.github.io/async-storage/) |
-| Haptics | [expo-haptics](https://docs.expo.dev/versions/latest/sdk/haptics/) |
-| API | [Finnhub Stock API](https://finnhub.io/) (REST) |
+| UI | React Native 0.83 + React 19 |
+| Web | react-native-web |
+| Language | TypeScript (strict) |
+| Storage | AsyncStorage |
+| Charts | react-native-svg |
+| Icons | @expo/vector-icons (Ionicons) |
+| Auth & entitlements | [Supabase](https://supabase.com/) (`@supabase/supabase-js`, optional) |
 
 ---
 
-## Project Structure
+## Configuration
 
-```
-StockExplorer/
-├── App.tsx                          # Root component with screen routing
-├── index.ts                         # Expo entry point
-├── app.json                         # Expo configuration
-├── package.json                     # Dependencies and scripts
-├── tsconfig.json                    # TypeScript configuration
-│
-├── constants/
-│   ├── colors.ts                    # Dark theme color palette
-│   └── config.ts                    # API key configuration
-│
-├── components/
-│   ├── BottomNav.tsx                # Tab bar navigation
-│   ├── Card.tsx                     # Reusable card container
-│   ├── DetailChartModal.tsx         # Expanded chart modal
-│   ├── ErrorBoundary.tsx            # Error boundary wrapper
-│   ├── LoadingIndicator.tsx         # Loading spinner
-│   ├── MetricTooltip.tsx            # Educational metric explanations
-│   ├── MiniChart.tsx                # Inline SVG sparkline chart
-│   ├── SearchBar.tsx                # Search input component
-│   ├── SkeletonLoader.tsx           # Skeleton loading placeholders
-│   ├── StatRow.tsx                  # Key-value stat display
-│   └── StockRow.tsx                 # Stock list item
-│
-├── screens/
-│   ├── DashboardScreen.tsx          # Market overview and trending
-│   ├── StockSearchScreen.tsx        # Stock symbol search
-│   ├── StockDetailScreen.tsx        # Individual stock deep-dive
-│   ├── MarketExplanationScreen.tsx  # Analysis and signals
-│   ├── SimulationResultsScreen.tsx  # Scenario projections
-│   ├── CompareScreen.tsx            # Side-by-side stock comparison
-│   ├── WatchlistScreen.tsx          # Saved watchlist
-│   └── PortfolioScreen.tsx          # Portfolio tracker
-│
-├── context/
-│   ├── AlertsContext.tsx            # Price alert state management
-│   ├── PortfolioContext.tsx          # Portfolio holdings state
-│   ├── PortfolioHistoryContext.tsx   # Portfolio value history
-│   ├── RecentSearchesContext.tsx     # Search history state
-│   └── WatchlistContext.tsx          # Watchlist state management
-│
-├── services/
-│   ├── finnhub.ts                   # Finnhub API client
-│   └── analysis.ts                  # Rules-based stock analysis engine
-│
-└── utils/
-    └── haptics.ts                   # Haptic feedback helpers
-```
+**Secrets are not committed.** Copy `.env.example` to `.env` in the project root and set:
+
+| Variable | Purpose |
+|----------|---------|
+| `EXPO_PUBLIC_FINNHUB_API_KEY` | Required for live quotes, search, news, metrics |
+| `EXPO_PUBLIC_ALPHA_VANTAGE_API_KEY` | Optional; enables historical similar-setup / forward-return stats |
+| `EXPO_PUBLIC_SUPABASE_URL` | Optional; Supabase project URL — if set with anon key, real auth + server-backed trial/preview |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Optional; Supabase anon (public) key — safe in the client with RLS enabled |
+| `EXPO_PUBLIC_ADMIN_EMAIL` | Legacy mode only (no Supabase): client-side admin bypass for local testing |
+
+Restart the dev server after changing `.env`.
+
+### Supabase setup (recommended for production-style accounts)
+
+1. Create a project at [supabase.com](https://supabase.com/).
+2. In **Project Settings → API**, copy the project URL and **anon** key into `.env` as `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
+3. In **SQL Editor**, run the script in `supabase/migrations/001_profiles_and_entitlements.sql`. This creates `public.profiles`, RLS, signup trigger, and RPCs `start_app_trial` / `enter_app_preview`.
+4. Under **Authentication → Providers**, configure email (disable “Confirm email” for faster local testing, or keep it on and confirm via inbox).
+5. Grant yourself admin: in **Table Editor → profiles**, set `is_admin` to `true` for your user row (or run the SQL comment at the bottom of the migration file).
+6. **OAuth (Apple / Google):** In Supabase → **Authentication → URL configuration**, add the redirect URL that matches your app scheme (see `services/oauthSupabase.ts` — default pattern uses scheme `stockexplorer` and path `auth/callback`). Enable the providers you need under **Authentication → Providers**.
 
 ---
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18 or later recommended)
-- [Expo CLI](https://docs.expo.dev/get-started/installation/) (`npx expo` works without global install)
-- A free [Finnhub API key](https://finnhub.io/register)
+- Node.js 18+
+- npm or yarn
+- Free [Finnhub](https://finnhub.io/register) API key (and optionally [Alpha Vantage](https://www.alphavantage.co/support/#api-key))
 
-### Installation
+### Install
 
-1. **Clone the repository:**
+```bash
+git clone https://github.com/calebohanlon11/StockExplorer.git
+cd StockExplorer
+npm install
+cp .env.example .env
+# Edit .env and add your keys
+npx expo start
+```
 
-   ```bash
-   git clone https://github.com/<your-username>/StockExplorer.git
-   cd StockExplorer
-   ```
+Then press `w` (web), `a` (Android), or `i` (iOS simulator), or scan the QR code with Expo Go.
 
-2. **Install dependencies:**
-
-   ```bash
-   npm install
-   ```
-
-3. **Add your Finnhub API key:**
-
-   Open `constants/config.ts` and replace the placeholder with your key:
-
-   ```typescript
-   export const FINNHUB_API_KEY = 'YOUR_FINNHUB_API_KEY_HERE';
-   ```
-
-   > You can get a free API key at [finnhub.io/register](https://finnhub.io/register).
-
-4. **Start the development server:**
-
-   ```bash
-   npx expo start
-   ```
-
-5. **Run the app:**
-   - Press `w` to open in a web browser
-   - Press `a` to open on an Android emulator/device
-   - Press `i` to open on an iOS simulator (macOS only)
-   - Scan the QR code with the Expo Go app on your phone
-
----
-
-## Available Scripts
+### Scripts
 
 | Command | Description |
-|---|---|
-| `npm start` | Start the Expo development server |
-| `npm run web` | Start directly in web mode |
-| `npm run android` | Start on Android emulator/device |
-| `npm run ios` | Start on iOS simulator |
+|---------|-------------|
+| `npm start` | Expo dev server |
+| `npm run start:dev` | Dev server for a **development build** (after installing an EAS dev client) |
+| `npm run web` | Web |
+| `npm run android` | Android |
+| `npm run ios` | iOS simulator |
+
+### EAS Build (optional)
+
+The repo includes `eas.json` with **development** (dev client + internal APK), **preview** (internal APK), and **production** profiles. Cloud builds do **not** read your local `.env`; set the same `EXPO_PUBLIC_*` variables in the [Expo dashboard](https://expo.dev) (Project → Environment variables) or via `eas env:create`.
+
+| Command | Description |
+|---------|-------------|
+| `npm run eas:login` | Log in to Expo |
+| `npm run eas:init` | Link the project to EAS (first time) |
+| `npm run eas:build:dev` | Development client build |
+| `npm run eas:build:preview` | Internal preview build |
+| `npm run eas:build:production` | Production build |
+| `npm run eas:submit` | Submit to stores (after production build) |
+
+### Typecheck
+
+```bash
+npx tsc --noEmit
+```
 
 ---
 
-## API Usage
+## API notes
 
-This app uses the [Finnhub Stock API](https://finnhub.io/docs/api) (free tier). The following endpoints are consumed:
-
-| Endpoint | Purpose |
-|---|---|
-| `/quote` | Real-time stock quotes |
-| `/stock/profile2` | Company profile information |
-| `/search` | Symbol/company name search |
-| `/company-news` | Recent company news articles |
-| `/stock/metric` | Financial metrics and ratios |
-
-> **Rate Limits:** The free Finnhub tier allows 60 API calls per minute. The app batches requests where possible, but heavy usage across multiple screens may occasionally hit limits.
+- **Finnhub free tier:** ~60 calls/minute; heavy use may show temporary “data unavailable” — wait and pull to refresh.
+- **Alpha Vantage free tier:** low daily quota; the app caches historical series aggressively.
 
 ---
 
-## Analysis Engine
+## Project structure (high level)
 
-The built-in analysis engine (`services/analysis.ts`) scores stocks across five categories and produces actionable signals without requiring any external AI service:
-
-| Category | Max Score | What It Evaluates |
-|---|---|---|
-| Momentum | +/-3 | 5-day, 13-week, 52-week returns; S&P 500 relative performance |
-| Valuation | +/-2 | P/E, Forward P/E, PEG, EV/EBITDA |
-| Growth | +/-3 | EPS growth (YoY, 5Y), Revenue growth (YoY, 5Y) |
-| Profitability | +/-2 | ROE, net profit margin, gross margin |
-| Risk | +/-2 | Beta, debt/equity ratio, 3-month volatility |
-
-The composite score maps to signals (Bullish to Bearish) and action ratings (Strong Buy to Sell), with 52-week range position used as a tiebreaker.
+```
+App.tsx                 # Root navigation, providers, subscription flow
+app.json / eas.json     # Expo app config and EAS build profiles
+.env.example            # Template for EXPO_PUBLIC_* keys (copy to `.env`)
+constants/              # Theme colors, env-driven config (no secrets in repo)
+components/             # UI building blocks (Card, charts, LockedGate, …)
+screens/                # Dashboard, search, detail, analysis, profile, paywall, auth, …
+context/                # AuthContext, SubscriptionContext, watchlist, portfolio, alerts, …
+services/               # supabase, oauthSupabase, finnhub, alphaVantage, analysis, historicalAnalog
+supabase/migrations/    # SQL for profiles + entitlements RPCs
+utils/                  # haptics, alert helpers
+```
 
 ---
 
-## Design
+## Security & compliance
 
-StockExplorer uses a dark theme optimized for financial data readability:
-
-- **Background:** `#12141C` (deep navy)
-- **Cards:** `#1A1E2E` (elevated dark surface)
-- **Primary accent:** `#19E85A` (vibrant green for gains)
-- **Loss color:** `#DF3B3B` (red for negative changes)
-- **Info accent:** `#18B5F0` (blue for neutral highlights)
+- This app is for **education and information**, not personalized investment advice.
+- Do **not** commit `.env` or real API keys. Use `.env.example` only as a template.
+- With **Supabase**, trial/preview/admin flags live in `profiles` with RLS; only the signed-in user can read their row, and subscription changes go through **RPCs** (not arbitrary client updates). For **store billing**, add RevenueCat (or similar) and sync entitlements server-side.
+- **Legacy mode** (no Supabase): `EXPO_PUBLIC_ADMIN_EMAIL` is client-side only — fine for local demos, not for real enforcement.
 
 ---
 
 ## License
 
-This project is provided as-is for educational and personal use.
+Provided as-is for educational and personal use.
