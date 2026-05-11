@@ -70,6 +70,7 @@ Restart the dev server after changing `.env`.
 4. Under **Authentication → Providers**, configure email (disable “Confirm email” for faster local testing, or keep it on and confirm via inbox).
 5. Grant yourself admin: in **Table Editor → profiles**, set `is_admin` to `true` for your user row (or run the SQL comment at the bottom of the migration file).
 6. **OAuth (Apple / Google):** In Supabase → **Authentication → URL configuration**, add the redirect URL that matches your app scheme (see `services/oauthSupabase.ts` — default pattern uses scheme `stockexplorer` and path `auth/callback`). Enable the providers you need under **Authentication → Providers**.
+7. **Market-data proxy (recommended):** deploy the `market-data` Edge Function to keep the Finnhub key off the client and absorb rate-limit bursts. See [`supabase/functions/README.md`](./supabase/functions/README.md). Once deployed, signed-in users automatically route through it; legacy `EXPO_PUBLIC_FINNHUB_API_KEY` is only used as a fallback when running without Supabase.
 
 ---
 
@@ -127,24 +128,27 @@ npx tsc --noEmit
 
 ## API notes
 
-- **Finnhub free tier:** ~60 calls/minute; heavy use may show temporary “data unavailable” — wait and pull to refresh.
-- **Alpha Vantage free tier:** low daily quota; the app caches historical series aggressively.
+- **Finnhub free tier:** ~60 calls/minute. When the `market-data` Edge Function is deployed and the user is signed in, the client routes through it: requests are de-duplicated server-side, responses cached per-endpoint, and the Finnhub key never reaches the browser. The client itself also adds an in-memory TTL cache, in-flight de-duplication, and a small concurrency limiter (`services/finnhub.ts`), so a burst refresh on the dashboard usually costs **0–1** real upstream calls.
+- **Alpha Vantage free tier:** low daily quota; the app caches historical series aggressively in AsyncStorage. (Moving Alpha Vantage behind the same proxy is a planned follow-up.)
+- If you see “Data temporarily unavailable,” the most common causes are: (1) no API key configured locally **and** not signed in via Supabase, or (2) upstream rate-limited — pull to refresh after a minute.
 
 ---
 
 ## Project structure (high level)
 
 ```
-App.tsx                 # Root navigation, providers, subscription flow
-app.json / eas.json     # Expo app config and EAS build profiles
-.env.example            # Template for EXPO_PUBLIC_* keys (copy to `.env`)
-constants/              # Theme colors, env-driven config (no secrets in repo)
-components/             # UI building blocks (Card, charts, LockedGate, …)
-screens/                # Dashboard, search, detail, analysis, profile, paywall, auth, …
-context/                # AuthContext, SubscriptionContext, watchlist, portfolio, alerts, …
-services/               # supabase, oauthSupabase, finnhub, alphaVantage, analysis, historicalAnalog
-supabase/migrations/    # SQL for profiles + entitlements RPCs
-utils/                  # haptics, alert helpers
+App.tsx                   # Root navigation, providers, subscription flow
+app.json / eas.json       # Expo app config and EAS build profiles
+.env.example              # Template for EXPO_PUBLIC_* keys (copy to `.env`)
+constants/                # Theme colors, env-driven config (no secrets in repo)
+components/               # UI building blocks (Card, charts, LockedGate, …)
+screens/                  # Dashboard, search, detail, analysis, profile, paywall, auth, …
+context/                  # AuthContext, SubscriptionContext, watchlist, portfolio, alerts, …
+services/                 # supabase, oauthSupabase, finnhub (cached + edge-routed), alphaVantage, analysis, historicalAnalog
+supabase/migrations/      # SQL for profiles + entitlements RPCs
+supabase/functions/       # Deno edge functions (market-data proxy)
+supabase/config.toml      # Per-function Supabase config (e.g. verify_jwt)
+utils/                    # haptics, alert helpers
 ```
 
 ---

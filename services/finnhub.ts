@@ -1,12 +1,137 @@
-import { FINNHUB_API_KEY } from '../constants/config';
+import { FINNHUB_API_KEY, SUPABASE_URL, isSupabaseConfigured } from '../constants/config';
+import { getSupabase } from './supabase';
 
-const BASE = 'https://finnhub.io/api/v1';
+const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+
+/**
+ * Per-endpoint client cache TTL (ms). Short enough to feel live, long enough to
+ * absorb bursty refreshes (e.g. several quote loads on the dashboard).
+ */
+const TTL_MS: Record<string, number> = {
+  '/quote': 12_000,
+  '/stock/profile2': 6 * 60 * 60 * 1000,
+  '/stock/metric': 60 * 60 * 1000,
+  '/search': 10 * 60 * 1000,
+  '/company-news': 5 * 60 * 1000,
+};
+
+interface CacheEntry { expiresAt: number; value: unknown }
+const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<unknown>>();
+
+const MAX_CONCURRENT = 4;
+let active = 0;
+const queue: Array<() => void> = [];
+
+function acquireSlot(): Promise<void> {
+  if (active < MAX_CONCURRENT) {
+    active += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    queue.push(() => {
+      active += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseSlot(): void {
+  active = Math.max(0, active - 1);
+  const next = queue.shift();
+  if (next) next();
+}
+
+function cacheKey(path: string, params: Record<string, string>): string {
+  const sorted = Object.keys(params)
+    .sort()
+    .map((k) => `${k}=${params[k]}`)
+    .join('&');
+  return `${path}?${sorted}`;
+}
+
+async function fetchViaEdge<T>(
+  path: string,
+  params: Record<string, string>,
+  accessToken: string,
+): Promise<T> {
+  const base = SUPABASE_URL.trim().replace(/\/+$/, '');
+  const url = new URL(`${base}/functions/v1/market-data`);
+  url.searchParams.set('path', path.replace(/^\/+/, ''));
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`market-data ${res.status}: ${res.statusText}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+async function fetchDirect<T>(
+  path: string,
+  params: Record<string, string>,
+): Promise<T> {
+  if (!FINNHUB_API_KEY) {
+    throw new Error(
+      'No Finnhub credentials available. Sign in with Supabase or set EXPO_PUBLIC_FINNHUB_API_KEY in .env.',
+    );
+  }
+  const query = new URLSearchParams({ ...params, token: FINNHUB_API_KEY }).toString();
+  const res = await fetch(`${FINNHUB_BASE}${path}?${query}`);
+  if (!res.ok) throw new Error(`Finnhub ${res.status}: ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
+async function resolveRoute(): Promise<{ kind: 'edge'; accessToken: string } | { kind: 'direct' }> {
+  if (!isSupabaseConfigured()) return { kind: 'direct' };
+  const supabase = getSupabase();
+  if (!supabase) return { kind: 'direct' };
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (token) return { kind: 'edge', accessToken: token };
+  } catch {
+    // fall through to direct
+  }
+  return { kind: 'direct' };
+}
 
 async function request<T>(path: string, params: Record<string, string> = {}): Promise<T> {
-  const query = new URLSearchParams({ ...params, token: FINNHUB_API_KEY }).toString();
-  const res = await fetch(`${BASE}${path}?${query}`);
-  if (!res.ok) throw new Error(`Finnhub ${res.status}: ${res.statusText}`);
-  return res.json();
+  const key = cacheKey(path, params);
+  const ttl = TTL_MS[path] ?? 30_000;
+  const now = Date.now();
+
+  const hit = cache.get(key);
+  if (hit && hit.expiresAt > now) return hit.value as T;
+
+  const inflight = inFlight.get(key) as Promise<T> | undefined;
+  if (inflight) return inflight;
+
+  const job = (async () => {
+    await acquireSlot();
+    try {
+      const route = await resolveRoute();
+      const value = route.kind === 'edge'
+        ? await fetchViaEdge<T>(path, params, route.accessToken)
+        : await fetchDirect<T>(path, params);
+      cache.set(key, { expiresAt: Date.now() + ttl, value });
+      return value;
+    } finally {
+      releaseSlot();
+      inFlight.delete(key);
+    }
+  })();
+
+  inFlight.set(key, job);
+  return job;
+}
+
+/** Test/debug helper — clears the in-memory request cache. */
+export function clearFinnhubCache(): void {
+  cache.clear();
+  inFlight.clear();
 }
 
 // ── Types ─────────────────────────────────

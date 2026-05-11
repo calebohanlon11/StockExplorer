@@ -39,6 +39,10 @@ yarn-error.*
 !.env.example
 .env*.local
 
+# Supabase local-only secrets for edge functions
+supabase/.env.local
+supabase/.temp/
+
 # typescript
 *.tsbuildinfo
 

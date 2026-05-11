@@ -1,0 +1,6 @@
+# Supabase project config (functions section). Generated/maintained for the
+# StockExplorer market-data proxy. `supabase init` may add more sections — this
+# file only locks down what we explicitly need.
+
+[functions.market-data]
+verify_jwt = true
